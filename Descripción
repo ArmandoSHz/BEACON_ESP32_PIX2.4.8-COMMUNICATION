@@ -1,0 +1,42 @@
+1. Parte del Hedgehog
+Definición de constantes y uniones:
+
+Se definen los ID de datagramas para diferentes tipos de datos (POSITION_DATAGRAM_ID, POSITION_DATAGRAM_HIGHRES_ID, etc.).
+Se usan uniones (UN_SHORT, UN_LONG, UN_LONGLONG) para facilitar la conversión entre bytes y tipos de datos como uint16_t, int64_t, etc.
+Variables:
+
+Se definen variables volatile para almacenar datos recibidos, como posiciones y datos IMU.
+Función CRC16:
+
+hedgehog_set_crc16() calcula el CRC16 de los datos, que se usa para validar la integridad de los datos recibidos.
+Funciones setup_hedgehog() y loop_hedgehog():
+
+setup_hedgehog() inicializa la comunicación serial a 115200 baudios.
+loop_hedgehog() lee los datos del puerto serial, almacena bytes en un buffer y procesa paquetes de datos basados en su ID. Dependiendo del ID del datagrama, actualiza variables relacionadas con la posición o los datos del IMU.
+
+
+2. Parte del LCD
+Inicialización del LCD:
+
+setup_lcd() configura y muestra un mensaje inicial en el LCD.
+Actualización del LCD:
+
+loop_lcd() muestra las coordenadas X, Y y Z del hedgehog en la segunda línea del LCD, actualizando cada 500 ms.
+
+
+3. Parte de los Puertos UART
+Configuración de los puertos UART:
+
+Se configuran dos puertos UART (mySerial1 y mySerial2) para comunicación con diferentes dispositivos (Marvelmind y Pixhawk).
+Funciones setup_uart() y loop_uart():
+
+setup_uart() inicializa los puertos UART y la comunicación serial para depuración.
+loop_uart() lee datos de los puertos UART y los reenvía entre ellos, además de mostrarlos en el monitor serial para depuración.
+
+
+4. Configuración y Bucle Principal
+setup(): Llama a las funciones de configuración para el hedgehog, el LCD y los puertos UART.
+
+loop(): Ejecuta repetidamente las funciones de bucle para el hedgehog, el LCD y los puertos UART.
+
+En resumen, el código gestiona la comunicación serial para recibir datos de un sistema de localización y un sensor IMU, muestra estos datos en un LCD y facilita la comunicación entre dos dispositivos a través de puertos UART.
