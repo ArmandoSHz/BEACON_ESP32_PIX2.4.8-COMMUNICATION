@@ -1,0 +1,337 @@
+#include <LiquidCrystal.h>
+#include <HardwareSerial.h>
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//  HEDGEHOG RELATED PART
+
+#define POSITION_DATAGRAM_ID 0x44
+#define POSITION_DATAGRAM_HIGHRES_ID 0x45
+#define RAW_IMU_DATAGRAM_ID 0x46
+#define IMU_FUSION_DATAGRAM_ID 0x47
+
+// union for byte access to short/long/integer types
+typedef union {
+  struct {
+    uint8_t b[2];
+  };
+  uint16_t wi;
+} UN_SHORT;
+
+typedef union {
+  struct {
+    uint8_t b[4];
+  };
+  long vi32;
+  uint32_t ui32;
+} UN_LONG;
+
+typedef union {
+  struct {
+    uint8_t b[8];
+  };
+  int64_t vi64;
+  uint64_t ui64;
+} UN_LONGLONG;
+
+volatile uint8_t hedgehog_serial_buf[64];
+volatile uint8_t hedgehog_serial_buf_index = 0;
+volatile uint8_t hedgehog_serial_buf_overflow = 0;
+volatile uint8_t hedgehog_pos_updated = 0;
+volatile uint8_t imu_raw_updated = 0;
+volatile uint8_t imu_fusion_updated = 0;
+
+volatile long hedgehog_x = 0;
+volatile long hedgehog_y = 0;
+volatile long hedgehog_z = 0;
+volatile int16_t imu_acc_x = 0;
+volatile int16_t imu_acc_y = 0;
+volatile int16_t imu_acc_z = 0;
+volatile int16_t imu_gyro_x = 0;
+volatile int16_t imu_gyro_y = 0;
+volatile int16_t imu_gyro_z = 0;
+volatile int16_t imu_compass_x = 0;
+volatile int16_t imu_compass_y = 0;
+volatile int16_t imu_compass_z = 0;
+volatile int32_t imu_fusion_x = 0;
+volatile int32_t imu_fusion_y = 0;
+volatile int32_t imu_fusion_z = 0;
+volatile int16_t imu_fusion_qw = 0;
+volatile int16_t imu_fusion_qx = 0;
+volatile int16_t imu_fusion_qy = 0;
+volatile int16_t imu_fusion_qz = 0;
+volatile int16_t imu_fusion_vx = 0;
+volatile int16_t imu_fusion_vy = 0;
+volatile int16_t imu_fusion_vz = 0;
+volatile int16_t imu_fusion_ax = 0;
+volatile int16_t imu_fusion_ay = 0;
+volatile int16_t imu_fusion_az = 0;
+volatile int64_t imu_fusion_timestamp = 0;
+
+// CRC16 function
+uint16_t hedgehog_set_crc16(uint8_t *data, uint16_t length) {
+  uint16_t crc = 0xFFFF;
+
+  for (uint16_t i = 0; i < length; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      if (crc & 1) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+
+  return crc;
+}
+
+void setup_hedgehog() {
+  Serial.begin(115200);
+}
+
+void loop_hedgehog() {
+  if (Serial.available()) {
+    uint8_t incoming_byte = Serial.read();
+
+    if (hedgehog_serial_buf_index < sizeof(hedgehog_serial_buf)) {
+      hedgehog_serial_buf[hedgehog_serial_buf_index++] = incoming_byte;
+    } else {
+      hedgehog_serial_buf_overflow = 1;
+    }
+
+    // Assuming we receive a complete datagram
+    if (hedgehog_serial_buf_index >= 10) {
+      uint8_t data_id = hedgehog_serial_buf[8];
+      uint16_t packet_size = hedgehog_serial_buf_index;
+
+      // calculate CRC and validate packet here
+      uint16_t crc = hedgehog_set_crc16((uint8_t*)&hedgehog_serial_buf[0], packet_size); // calculate CRC checksum of packet
+
+      if (crc == 0) { // Assuming 0 is the valid CRC value
+        switch (data_id) {
+          case POSITION_DATAGRAM_ID: {
+            // coordinates of hedgehog (X,Y), cm
+            UN_SHORT un16;
+            un16.b[0] = hedgehog_serial_buf[9];
+            un16.b[1] = hedgehog_serial_buf[10];
+            hedgehog_x = 10 * long(un16.wi);
+
+            un16.b[0] = hedgehog_serial_buf[11];
+            un16.b[1] = hedgehog_serial_buf[12];
+            hedgehog_y = 10 * long(un16.wi);
+
+            un16.b[0] = hedgehog_serial_buf[13];
+            un16.b[1] = hedgehog_serial_buf[14];
+            hedgehog_z = 10 * long(un16.wi);
+
+            hedgehog_pos_updated = 1;
+            break;
+          }
+          case POSITION_DATAGRAM_HIGHRES_ID: {
+            // coordinates of hedgehog (X,Y), mm
+            UN_LONG un32;
+            un32.b[0] = hedgehog_serial_buf[9];
+            un32.b[1] = hedgehog_serial_buf[10];
+            un32.b[2] = hedgehog_serial_buf[11];
+            un32.b[3] = hedgehog_serial_buf[12];
+            hedgehog_x = long(un32.vi32);
+
+            un32.b[0] = hedgehog_serial_buf[13];
+            un32.b[1] = hedgehog_serial_buf[14];
+            un32.b[2] = hedgehog_serial_buf[15];
+            un32.b[3] = hedgehog_serial_buf[16];
+            hedgehog_y = long(un32.vi32);
+
+            // height of hedgehog, mm (FW V3.97+)
+            un32.b[0] = hedgehog_serial_buf[17];
+            un32.b[1] = hedgehog_serial_buf[18];
+            un32.b[2] = hedgehog_serial_buf[19];
+            un32.b[3] = hedgehog_serial_buf[20];
+            hedgehog_z = long(un32.vi32);
+
+            hedgehog_pos_updated = 1;
+            break;
+          }
+          case RAW_IMU_DATAGRAM_ID: {
+            // IMU sensors raw data
+            UN_SHORT un16;
+            un16.b[0] = hedgehog_serial_buf[9];
+            un16.b[1] = hedgehog_serial_buf[10];
+            imu_acc_x = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[11];
+            un16.b[1] = hedgehog_serial_buf[12];
+            imu_acc_y = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[13];
+            un16.b[1] = hedgehog_serial_buf[14];
+            imu_acc_z = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[15];
+            un16.b[1] = hedgehog_serial_buf[16];
+            imu_gyro_x = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[17];
+            un16.b[1] = hedgehog_serial_buf[18];
+            imu_gyro_y = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[19];
+            un16.b[1] = hedgehog_serial_buf[20];
+            imu_gyro_z = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[21];
+            un16.b[1] = hedgehog_serial_buf[22];
+            imu_compass_x = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[23];
+            un16.b[1] = hedgehog_serial_buf[24];
+            imu_compass_y = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[25];
+            un16.b[1] = hedgehog_serial_buf[26];
+            imu_compass_z = un16.wi;
+
+            imu_raw_updated = 1;
+            break;
+          }
+          case IMU_FUSION_DATAGRAM_ID: {
+            // IMU fusion data
+            UN_LONG un32;
+            un32.b[0] = hedgehog_serial_buf[9];
+            un32.b[1] = hedgehog_serial_buf[10];
+            un32.b[2] = hedgehog_serial_buf[11];
+            un32.b[3] = hedgehog_serial_buf[12];
+            imu_fusion_timestamp = un32.ui32;
+
+            UN_SHORT un16;
+            un16.b[0] = hedgehog_serial_buf[13];
+            un16.b[1] = hedgehog_serial_buf[14];
+            imu_fusion_qw = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[15];
+            un16.b[1] = hedgehog_serial_buf[16];
+            imu_fusion_qx = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[17];
+            un16.b[1] = hedgehog_serial_buf[18];
+            imu_fusion_qy = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[19];
+            un16.b[1] = hedgehog_serial_buf[20];
+            imu_fusion_qz = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[21];
+            un16.b[1] = hedgehog_serial_buf[22];
+            imu_fusion_vx = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[23];
+            un16.b[1] = hedgehog_serial_buf[24];
+            imu_fusion_vy = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[25];
+            un16.b[1] = hedgehog_serial_buf[26];
+            imu_fusion_vz = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[27];
+            un16.b[1] = hedgehog_serial_buf[28];
+            imu_fusion_ax = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[29];
+            un16.b[1] = hedgehog_serial_buf[30];
+            imu_fusion_ay = un16.wi;
+
+            un16.b[0] = hedgehog_serial_buf[31];
+            un16.b[1] = hedgehog_serial_buf[32];
+            imu_fusion_az = un16.wi;
+
+            imu_fusion_updated = 1;
+            break;
+          }
+          default:
+            break;
+        }
+      }
+
+      // reset buffer index
+      hedgehog_serial_buf_index = 0;
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//  LCD RELATED PART
+
+LiquidCrystal lcd(7, 6, 5, 4, 3, 2); // initialize the library with the numbers of the interface pins
+
+void setup_lcd() {
+  lcd.begin(16, 2); // set up the LCD's number of columns and rows
+  lcd.print("Hedgehog IMU");
+}
+
+void loop_lcd() {
+  lcd.setCursor(0, 1); // move cursor to second line
+  lcd.print("X:");
+  lcd.print(hedgehog_x);
+  lcd.print(" Y:");
+  lcd.print(hedgehog_y);
+  lcd.print(" Z:");
+  lcd.print(hedgehog_z);
+  delay(500);
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//  UART PORTS RELATED PART
+
+// Configura los puertos UART
+HardwareSerial mySerial1(1); // UART1 para Marvelmind
+HardwareSerial mySerial2(2); // UART2 para Pixhawk
+
+void setup_uart() {
+  // Inicia el puerto serie para Marvelmind
+  mySerial1.begin(115200, SERIAL_8N1, 16, 17); // RX, TX
+
+  // Inicia el puerto serie para Pixhawk
+  mySerial2.begin(115200, SERIAL_8N1, 18, 19); // RX, TX
+
+  // Inicializa la comunicación serial para debugging
+  Serial.begin(115200);
+}
+
+void loop_uart() {
+  // Leer datos del Marvelmind
+  if (mySerial1.available()) {
+    char incomingByte = mySerial1.read();
+    // Enviar datos al Pixhawk
+    mySerial2.write(incomingByte);
+    // Mostrar datos en el monitor serial
+    Serial.write(incomingByte);
+  }
+
+  // Leer datos del Pixhawk
+  if (mySerial2.available()) {
+    char incomingByte = mySerial2.read();
+    // Puedes procesar los datos o reenviarlos al Marvelmind
+    // mySerial1.write(incomingByte);
+    // Mostrar datos en el monitor serial
+    Serial.write(incomingByte);
+  }
+}
+
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////
+//  MAIN SETUP AND LOOP
+
+void setup() {
+  setup_hedgehog();
+  setup_lcd();
+  setup_uart();
+}
+
+void loop() {
+  loop_hedgehog();
+  loop_lcd();
+  loop_uart();
+}
